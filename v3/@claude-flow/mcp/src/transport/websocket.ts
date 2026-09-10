@@ -7,6 +7,7 @@
 import { EventEmitter } from 'events';
 import { WebSocketServer, WebSocket, RawData } from 'ws';
 import { createServer, Server } from 'http';
+import { listenWithLoopbackFallback } from './listen.js';
 import type {
   ITransport,
   TransportType,
@@ -89,19 +90,31 @@ export class WebSocketTransport extends EventEmitter implements ITransport {
       perMessageDeflate: true,
     });
 
+    // ws re-emits server errors on the WebSocketServer; without a listener
+    // a failed bind crashes the process instead of rejecting start() (#2990)
+    this.wss.on('error', (err) => {
+      this.logger.error('WebSocket server error', err);
+    });
+
     this.setupWebSocketHandlers();
     this.startHeartbeat();
 
-    await new Promise<void>((resolve, reject) => {
-      this.server!.listen(this.config.port, this.config.host, () => {
-        resolve();
-      });
-      this.server!.on('error', reject);
-    });
+    const boundHost = await listenWithLoopbackFallback(
+      this.server,
+      this.config.port,
+      this.config.host,
+      (from, to, error) => {
+        this.logger.warn('IPv6 loopback unavailable, falling back to IPv4', {
+          requestedHost: from,
+          boundHost: to,
+          error: error.message,
+        });
+      }
+    );
 
     this.running = true;
     this.logger.info('WebSocket transport started', {
-      url: `ws://${this.config.host}:${this.config.port}${this.config.path || '/ws'}`,
+      url: `ws://${boundHost ?? this.config.host}:${this.config.port}${this.config.path || '/ws'}`,
     });
   }
 

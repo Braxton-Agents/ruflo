@@ -7,6 +7,7 @@
 import { EventEmitter } from 'events';
 import express, { Express, Request, Response, NextFunction } from 'express';
 import { createServer, Server } from 'http';
+import { listenWithLoopbackFallback } from './listen.js';
 import { WebSocketServer, WebSocket } from 'ws';
 import cors from 'cors';
 import helmet from 'helmet';
@@ -87,18 +88,31 @@ export class HttpTransport extends EventEmitter implements ITransport {
       path: '/ws',
     });
 
+    // ws re-emits server errors on the WebSocketServer; without a listener
+    // a failed bind crashes the process instead of rejecting start() (#2990)
+    this.wss.on('error', (err) => {
+      this.errors++;
+      this.logger.error('WebSocket server error', err);
+    });
+
     this.setupWebSocketHandlers();
 
-    await new Promise<void>((resolve, reject) => {
-      this.server!.listen(this.config.port, this.config.host, () => {
-        resolve();
-      });
-      this.server!.on('error', reject);
-    });
+    const boundHost = await listenWithLoopbackFallback(
+      this.server,
+      this.config.port,
+      this.config.host,
+      (from, to, error) => {
+        this.logger.warn('IPv6 loopback unavailable, falling back to IPv4', {
+          requestedHost: from,
+          boundHost: to,
+          error: error.message,
+        });
+      }
+    );
 
     this.running = true;
     this.logger.info('HTTP transport started', {
-      url: `http://${this.config.host}:${this.config.port}`,
+      url: `http://${boundHost ?? this.config.host}:${this.config.port}`,
     });
   }
 

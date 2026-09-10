@@ -7,6 +7,7 @@
 import { afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import * as fs from 'node:fs';
+import * as net from 'node:net';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -14,6 +15,22 @@ const HERE = path.dirname(fileURLToPath(import.meta.url));
 const CLI = path.resolve(HERE, '..', 'bin', 'cli.js');
 const CLI_BUILT = fs.existsSync(CLI);
 const TEST_TMP = path.resolve(HERE, '..', '..', '..', '..', '.tmp-2990', 'test-runtime');
+
+// The dual-loopback assertions require an IPv6 loopback on the host; many
+// containers and minimal CI images have none, and the server intentionally
+// skips the '::1' convenience bind there. Probe once and degrade to
+// IPv4-only assertions when '::1' is unavailable.
+let ipv6Loopback = false;
+
+function probeIpv6Loopback(): Promise<boolean> {
+  return new Promise((resolve) => {
+    const probe = net.createServer();
+    probe.once('error', () => resolve(false));
+    probe.listen(0, '::1', () => {
+      probe.close(() => resolve(true));
+    });
+  });
+}
 
 let child: ChildProcessWithoutNullStreams | undefined;
 
@@ -80,10 +97,11 @@ async function startHttpCli(port: number, tools: string): Promise<void> {
 }
 
 describe('MCP HTTP protocol and tool registry (#2990, end-to-end)', () => {
-  beforeAll(() => {
+  beforeAll(async () => {
     if (!CLI_BUILT) {
       throw new Error(`Built CLI required for end-to-end coverage: ${CLI}`);
     }
+    ipv6Loopback = await probeIpv6Loopback();
   });
 
   it('serves a spec-valid protocol string and the executable CLI tools on both RPC paths', async () => {
@@ -92,8 +110,10 @@ describe('MCP HTTP protocol and tool registry (#2990, end-to-end)', () => {
 
     const health = await fetch(`http://127.0.0.1:${port}/health`);
     expect(health.status).toBe(200);
-    const ipv6Health = await fetch(`http://[::1]:${port}/health`);
-    expect(ipv6Health.status).toBe(200);
+    if (ipv6Loopback) {
+      const ipv6Health = await fetch(`http://[::1]:${port}/health`);
+      expect(ipv6Health.status).toBe(200);
+    }
 
     const initialized = await postJson(port, '/mcp', {
       jsonrpc: '2.0',
@@ -107,13 +127,14 @@ describe('MCP HTTP protocol and tool registry (#2990, end-to-end)', () => {
     });
     expect(initialized.result.protocolVersion).toBe('2025-11-25');
 
-    // Initialize through IPv4, then call the alternate RPC path through IPv6.
-    // Independent server instances would reject this as an uninitialized session.
+    // Initialize through IPv4, then call the alternate RPC path through IPv6
+    // (falling back to IPv4 when the host has no IPv6 loopback). Independent
+    // server instances would reject this as an uninitialized session.
     const listed = await postJson(port, '/rpc', {
       jsonrpc: '2.0',
       id: 2,
       method: 'tools/list',
-    }, '::1');
+    }, ipv6Loopback ? '::1' : '127.0.0.1');
     const names = listed.result.tools.map((tool: { name: string }) => tool.name);
     expect(names.length).toBeGreaterThan(300);
     expect(names).toEqual(expect.arrayContaining([
