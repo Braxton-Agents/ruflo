@@ -54,7 +54,13 @@ function scaffoldProject(root: string): string {
 
 function runHook(hookPath: string, cwd: string, cmd: string): { stdout: string; ok: boolean } {
   try {
-    const stdout = execFileSync('node', [hookPath, cmd], { cwd, encoding: 'utf-8' });
+    // pnpm's bin shims export NODE_PATH pointing at the workspace's virtual
+    // store; inheriting it would let the hook resolve @claude-flow/memory
+    // from ANY cwd and defeat the isolation these tests assert. A deployed
+    // hook (spawned by Claude Code) runs without that variable.
+    const env = { ...process.env };
+    delete env.NODE_PATH;
+    const stdout = execFileSync('node', [hookPath, cmd], { cwd, encoding: 'utf-8', env });
     return { stdout, ok: true };
   } catch (err) {
     // The hook must never crash Claude Code (exit 0); a throw here is a failure.

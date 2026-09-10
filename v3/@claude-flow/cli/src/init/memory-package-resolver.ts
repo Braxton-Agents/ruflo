@@ -70,7 +70,14 @@ export function resolveMemoryPackageFromProject(targetDir: string): string | nul
   // 2. createRequire from the project's package.json (direct/transitive dep)
   try {
     const require = createRequire(path.join(targetDir, 'package.json'));
-    return require.resolve(MEMORY_PACKAGE);
+    const resolved = require.resolve(MEMORY_PACKAGE);
+    // require.resolve also consults ambient fallbacks (NODE_PATH — which
+    // pnpm's bin shims set process-wide — and the global folders). Those
+    // reflect how THIS process was launched, not what the target project can
+    // reach, so only trust a hit that lives under a node_modules directory
+    // on the project's own ancestor chain — the same chain the deployed
+    // hook's walk-up uses.
+    if (isUnderProjectNodeModules(resolved, targetDir)) return resolved;
   } catch {
     /* fall through */
   }
@@ -87,6 +94,18 @@ export function resolveMemoryPackageFromProject(targetDir: string): string | nul
   }
 
   return null;
+}
+
+/** True when `resolved` sits inside `<ancestor>/node_modules` for some ancestor of `targetDir`. */
+function isUnderProjectNodeModules(resolved: string, targetDir: string): boolean {
+  let dir = path.resolve(targetDir);
+  // eslint-disable-next-line no-constant-condition
+  while (true) {
+    if (resolved.startsWith(path.join(dir, 'node_modules') + path.sep)) return true;
+    const parent = path.dirname(dir);
+    if (parent === dir) return false;
+    dir = parent;
+  }
 }
 
 /** Read the version of the resolved memory package (dist/index.js → ../package.json). */
