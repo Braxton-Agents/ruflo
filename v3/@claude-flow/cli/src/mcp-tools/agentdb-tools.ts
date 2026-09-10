@@ -178,12 +178,24 @@ export const agentdbPatternStore: MCPTool = {
         const { storeEntry } = await import('../memory/memory-initializer.js');
         const patternId = `pattern-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
         const value = JSON.stringify({ pattern, type, confidence, _fallback: 'reasoningBank-unavailable' });
-        await storeEntry({
+        const storeResult = await storeEntry({
           key: patternId,
           value,
           namespace: 'pattern',
           tags: [type, 'reasoning-pattern', 'fallback'],
         });
+        // storeEntry reports failures via its result rather than throwing
+        // (uninitialized DB, WAL-sidecar write refusal, …). Fabricating
+        // success here silently loses the pattern: the caller believes it
+        // persisted, and every later search legitimately finds nothing.
+        if (!storeResult.success) {
+          return {
+            success: false,
+            error: `Pattern store failed: ${storeResult.error ?? 'memory_store fallback rejected the write'}`,
+            controller: 'memory-store-fallback',
+            recommendation: 'Run agentdb_health to inspect controller registration and check that .swarm/memory.db is writable.',
+          };
+        }
         return {
           success: true,
           patternId,
