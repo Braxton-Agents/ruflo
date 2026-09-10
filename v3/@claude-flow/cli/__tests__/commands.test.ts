@@ -4,10 +4,14 @@
  */
 
 import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { agentCommand } from '../src/commands/agent.js';
 import { swarmCommand } from '../src/commands/swarm.js';
 import { memoryCommand } from '../src/commands/memory.js';
 import { configCommand } from '../src/commands/config.js';
+import { configManager } from '../src/services/config-file-manager.js';
 import type { CommandContext } from '../src/types.js';
 
 // Mock MCP client
@@ -661,14 +665,31 @@ describe('Memory Commands', () => {
 
 describe('Config Commands', () => {
   let ctx: CommandContext;
+  let tmpDir: string;
+
+  // configManager is a module-level singleton that caches its loaded
+  // config + resolved path across calls; reset its private state so each
+  // test's fresh tmp-dir is actually used instead of a previous test's
+  // cached config/path (same pattern as agent-provider-model-propagation).
+  const resetConfigManagerCache = () => {
+    (configManager as unknown as { config: unknown }).config = null;
+    (configManager as unknown as { configPath: unknown }).configPath = null;
+  };
 
   beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cf-config-cmd-'));
     ctx = {
       args: [],
       flags: { _: [] },
-      cwd: '/test',
+      cwd: tmpDir,
       interactive: false
     };
+    resetConfigManagerCache();
+  });
+
+  afterEach(() => {
+    resetConfigManagerCache();
+    fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
   describe('config init', () => {
@@ -678,20 +699,23 @@ describe('Config Commands', () => {
 
       const result = await initCmd!.action!(ctx);
 
-      // #1425: config init is not yet implemented
-      expect(result.success).toBe(false);
-      expect(result.exitCode).toBe(1);
+      expect(result.success).toBe(true);
+      expect(fs.existsSync(path.join(tmpDir, 'claude-flow.config.json'))).toBe(true);
     });
 
-    it('should initialize with V3 mode', async () => {
+    it('should refuse to overwrite an existing config without --force', async () => {
       const initCmd = configCommand.subcommands?.find(c => c.name === 'init');
 
-      ctx.flags = { v3: true, _: [] };
-      const result = await initCmd!.action!(ctx);
+      const first = await initCmd!.action!(ctx);
+      expect(first.success).toBe(true);
 
-      // #1425: config init is not yet implemented
-      expect(result.success).toBe(false);
-      expect(result.exitCode).toBe(1);
+      const again = await initCmd!.action!(ctx);
+      expect(again.success).toBe(false);
+      expect(again.exitCode).toBe(1);
+
+      ctx.flags = { force: true, _: [] };
+      const forced = await initCmd!.action!(ctx);
+      expect(forced.success).toBe(true);
     });
   });
 
@@ -725,9 +749,16 @@ describe('Config Commands', () => {
       ctx.flags = { key: 'swarm.maxAgents', value: '20', _: [] };
       const result = await setCmd!.action!(ctx);
 
-      // #1425: config set is not yet implemented
-      expect(result.success).toBe(false);
-      expect(result.exitCode).toBe(1);
+      expect(result.success).toBe(true);
+      expect(fs.existsSync(path.join(tmpDir, 'claude-flow.config.json'))).toBe(true);
+
+      // The value round-trips through config get (typed, not the raw string)
+      const getCmd = configCommand.subcommands?.find(c => c.name === 'get');
+      ctx.args = ['swarm.maxAgents'];
+      ctx.flags = { _: [] };
+      const got = await getCmd!.action!(ctx);
+      expect(got.success).toBe(true);
+      expect(got.data).toMatchObject({ key: 'swarm.maxAgents', value: 20 });
     });
 
     it('should fail without key and value', async () => {
@@ -759,9 +790,8 @@ describe('Config Commands', () => {
       ctx.flags = { force: true, _: [] };
       const result = await resetCmd!.action!(ctx);
 
-      // #1425: config reset is not yet implemented
-      expect(result.success).toBe(false);
-      expect(result.exitCode).toBe(1);
+      expect(result.success).toBe(true);
+      expect(fs.existsSync(path.join(tmpDir, 'claude-flow.config.json'))).toBe(true);
     });
   });
 
@@ -772,21 +802,32 @@ describe('Config Commands', () => {
 
       const result = await exportCmd!.action!(ctx);
 
-      // #1425: config export is not yet implemented
-      expect(result.success).toBe(false);
-      expect(result.exitCode).toBe(1);
+      expect(result.success).toBe(true);
+      expect(fs.existsSync(path.join(tmpDir, 'claude-flow.config.export.json'))).toBe(true);
     });
   });
 
   describe('config import', () => {
-    it('should import configuration', async () => {
+    it('should import configuration from a JSON file', async () => {
       const importCmd = configCommand.subcommands?.find(c => c.name === 'import');
       expect(importCmd).toBeDefined();
 
+      fs.writeFileSync(
+        path.join(tmpDir, 'config.json'),
+        JSON.stringify({ swarm: { maxAgents: 5 } })
+      );
       ctx.flags = { file: './config.json', _: [] };
       const result = await importCmd!.action!(ctx);
 
-      // #1425: config import is not yet implemented
+      expect(result.success).toBe(true);
+    });
+
+    it('should fail for a missing import file', async () => {
+      const importCmd = configCommand.subcommands?.find(c => c.name === 'import');
+
+      ctx.flags = { file: './missing.json', _: [] };
+      const result = await importCmd!.action!(ctx);
+
       expect(result.success).toBe(false);
       expect(result.exitCode).toBe(1);
     });
