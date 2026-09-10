@@ -381,7 +381,7 @@ const searchCommand: Command = {
       name: 'threshold',
       description: 'Similarity threshold (0-1)',
       type: 'number',
-      default: 0.7
+      default: 0.3
     },
     {
       name: 'type',
@@ -447,10 +447,14 @@ const searchCommand: Command = {
     // #2790 fix — `||` discards an explicit `--threshold 0` (falsy) and
     // silently uses the fallback; that made `--threshold 0` return
     // FEWER results than `--threshold 0.01` (non-monotonic). Nullish
-    // coalescing preserves an explicit zero. Fallback aligned with the
-    // option's declared `default: 0.7` (was `0.3` — the two disagreed
-    // and --help advertised a default the code did not honor).
-    const threshold = ctx.flags.threshold as number ?? 0.7;
+    // coalescing preserves an explicit zero.
+    //
+    // The default must stay 0.3: the AgentDB bridge's blended score
+    // (0.6 semantic + 0.4 lexical, see bridgeSearchEntries) is calibrated
+    // so a full-coverage keyword hit lands at >= 0.4. Raising the default
+    // to 0.7 (the earlier #2790 alignment) dropped exact-keyword hits and
+    // reintroduced the #2558 zero-recall regression on default search.
+    const threshold = ctx.flags.threshold as number ?? 0.3;
     const searchType = ctx.flags.type as string || 'semantic';
     const buildHnsw = (ctx.flags['build-hnsw'] || ctx.flags.buildHnsw) as boolean;
     const requestedIntent = (ctx.flags.intent as string) || 'mixed';
